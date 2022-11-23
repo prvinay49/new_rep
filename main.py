@@ -2,12 +2,13 @@ import json
 import os
 import copy
 import requests
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 from pytz import timezone
+from jira import JIRA
 
 
 from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS,cross_origin
+from flask_cors import CORS, cross_origin
 from werkzeug.http import parse_authorization_header
 
 from distutils.version import LooseVersion
@@ -22,6 +23,7 @@ cors = CORS(app, support_credentials=True)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DOWNLOAD_DIRECTORY = BASE_DIR + '/'
+
 
 @app.route("/files/<path:path>")
 def get_file(path):
@@ -175,7 +177,9 @@ def home():
             for change_type_key in results[gerrit].keys():
                 for i in range(len(results[gerrit][change_type_key])): results[gerrit][change_type_key][i][
                     'merge_time'] = str(results[gerrit][change_type_key][i]['merge_time'])
-        jql = 'issue in (' + ', '.join(issues) + ')'
+        #issues_1= ' '.join(issues)
+        #print(type(issues))
+        jql = 'issue in (' + ', '.join(issues)+ ')'
         # print('\nCommit-IDs which are available in ' + source + ' but NOT available in ' + target)
         # print('\n')
         # print(jql)
@@ -186,7 +190,9 @@ def home():
             print('Below project(s) do not have the target branch ({}):'.format(branch_comparison.branch2))
             #print(' ,'.join(branch_comparison.exceptional_repos))
         report_file_name = branch_comparison.generate_report()
+        print(len(jql.split(',')))
         results['report_file_name'] = report_file_name
+        results['all_results'] = jql
     else:
         print('\n*** No merge pending tickets ***\n')
 
@@ -282,11 +288,12 @@ def get_release_tags():
 def compare_release_tags():
     req_data = request.get_json()
     print(req_data)
+
     project_name = req_data.get('project_name')
+
     manifest_file = req_data.get('manifest_file')
     release_report_type = req_data.get('release_report_type')
     selected_device_release = req_data.get('selected_device_release')
-    print(selected_device_release)
 
     source_release_tag = req_data['source_release_tag']
     target_release_tag = req_data['target_release_tag']
@@ -323,16 +330,29 @@ def compare_release_tags():
 
     print("Start Time:%s" % start)
 
-    if release_report_type == 'missing':
+    if release_report_type == 'missing':    
         diff_report = False
     else:
         source_release_tag, target_release_tag = target_release_tag, source_release_tag
         source_release_no, target_release_no = target_release_no, source_release_no
         diff_report = True
+        if project_name:
+            print(project_name)
+            if len(project_name.split(","))>10:
+                return {'error': 'maximum project limit is 10'}
+            else:
+                release_comparison = ReleaseComparison(source_release_no, target_release_no,
+                                                    source_release_tag, target_release_tag,
+                                                    selected_device_release,
+                                                    project_name, manifest_file, diff_report)
+
+
+
         release_comparison = ReleaseComparison(source_release_no, target_release_no,
-                                           source_release_tag, target_release_tag,
-                                           selected_device_release,
-                                           project_name, manifest_file, diff_report)
+                                                    source_release_tag, target_release_tag,
+                                                    selected_device_release,
+                                                    project_name, manifest_file, diff_report)
+            
 
     if gerrit_option == 'ccp':
         release_comparison.gerrits = ['primary_gerrit']
@@ -352,7 +372,7 @@ def compare_release_tags():
     except Exception as  e:
         print ("-------------------Exception------------------------------")
         print (e)
-        raise e
+        #raise e
         print('--------------------*************--------------------------')
         return {'error': 'Unable to get report, Please contact support'}
 
@@ -368,11 +388,13 @@ def compare_release_tags():
                 for i in range(len(results[gerrit][change_type_key])):
                     results[gerrit][change_type_key][i]['merge_time'] = str(
                         results[gerrit][change_type_key][i]['merge_time'])
+        
         jql = 'issue in (' + ', '.join(issues) + ')'
         print('\nCommit-IDs which are available in %s  but NOT available in  %s'
               %(source_release_tag, target_release_tag))
         print('\n')
         print(jql)
+        
         print('\n')
         #print(json.dumps(results, indent=2))
         print('\n')
@@ -382,6 +404,7 @@ def compare_release_tags():
             print(' ,'.join(release_comparison.exceptional_repos))
         report_file_name = release_comparison.generate_report()
         results['report_file_name'] = report_file_name
+        results['all_results'] = jql
     else:
         print('\n*** No changes ***\n')
 

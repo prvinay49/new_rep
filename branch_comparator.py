@@ -11,6 +11,7 @@ import xlwt
 import xmltodict
 import configparser
 from pytz import timezone
+from rmjirautilites import *
 
 from progress_bar import *
 
@@ -189,10 +190,10 @@ class BranchComparison:
                 self.manifests[device]['project'].replace('/','%2F'),
                 self.branch1, self.manifests[device]['manifest_file'] + '/content'
             )
-            print("***********************manifest api*****************************")
-            print(manifest_api)
+            # print("***********************manifest api*****************************")
+            # print(manifest_api)
             manifest_content = self.gerrit.get(manifest_api)
-            print('****************', device, self.manifests[device]['manifest_file'])
+            # print('****************', device, self.manifests[device]['manifest_file'])
             if device in ['XCam', 'XCam2', 'ICam2', 'Doorbell']:
                 #manifest = json.loads(manifest_content)
                 projects = self.get_deps_content(manifest_content)
@@ -220,7 +221,7 @@ class BranchComparison:
                 for project in manifest['manifest']['project']:
                     if project['@name'] not in self.repos_to_be_checked:
                         self.repos_to_be_checked.append(project['@name'])
-            print('************Repos to be checked ***************', self.repos_to_be_checked)
+            #print('************Repos to be checked ***************', self.repos_to_be_checked)
         except Exception as e:
             print(e)
             raise Exception('Exception occured while getting device repos, '
@@ -288,7 +289,7 @@ class BranchComparison:
         total_iteration = 10
         total_length = len(self.projects_log[branch2].keys()) * total_iteration
         current_count = 0
-        printProgressBar (current_count, total_length, prefix = 'Checking implicit changes', suffix = '', decimals = 1, length = 100, fill = '||')
+        #printProgressBar (current_count, total_length, prefix = 'Checking implicit changes', suffix = '', decimals = 1, length = 100, fill = '||')
         for project in self.projects_log[branch2].keys():
             iteration_count = 0
 
@@ -304,7 +305,7 @@ class BranchComparison:
                     mod = current_count // total_iteration
                     rem = current_count % total_iteration
                     current_count = (mod + 1) * total_iteration
-                    printProgressBar (current_count, total_length, prefix = 'Checking implicit changes', suffix = '', decimals = 1, length = 100, fill = '||')
+                    #printProgressBar (current_count, total_length, prefix = 'Checking implicit changes', suffix = '', decimals = 1, length = 100, fill = '||')
                     self.exceptional_repos.append(project)
                     break
                 for log in logs['log']:
@@ -313,13 +314,13 @@ class BranchComparison:
                         end = log['message'].find('\n', start + 1)
                         self.projects_log[branch2][project].append(log['message'][start + 11: end])
                         start = log['message'].find('Change-Id: ', start+1)
-                printProgressBar (current_count, total_length, prefix = 'Checking implicit changes', suffix = '', decimals = 1, length = 100, fill = '||')
+                #printProgressBar (current_count, total_length, prefix = 'Checking implicit changes', suffix = '', decimals = 1, length = 100, fill = '||')
                 if 'next' not in logs.keys():
                     mod = current_count // total_iteration
                     rem = current_count % total_iteration
                     if rem != 0:
                         current_count = (mod + 1) * total_iteration
-                        printProgressBar (current_count, total_length, prefix = 'Checking implicit changes', suffix = '', decimals = 1, length = 100, fill = '||')
+                        #printProgressBar (current_count, total_length, prefix = 'Checking implicit changes', suffix = '', decimals = 1, length = 100, fill = '||')
                     break
                 next = '/?s=' + logs['next']
 
@@ -361,10 +362,11 @@ class BranchComparison:
         '''
         self.branch1 = branch1
         self.branch2 = branch2
-        print(self.gerrits, '*********Gerrits*******')
+        self.jira=jira_login()
+        #print(self.gerrits, '*********Gerrits*******')
         for gerrit in self.gerrits:
             self.current_gerrit = gerrit
-            print('***************Current gerrit************%s*************' % self.current_gerrit)
+            #print('***************Current gerrit************%s*************' % self.current_gerrit)
             self.final_data[gerrit] = {
                 'changes': []
             }
@@ -387,7 +389,7 @@ class BranchComparison:
             while(1):
                 try:
                     commit_details = self.gerrit.get('/changes/?q=branch:'+self.branch1+'+status:merged\
-        &o=CURRENT_REVISION&o=CURRENT_COMMIT&o=MESSAGES&n=1000&S='+str(self.offset))
+        &o=CURRENT_REVISION&o=CURRENT_COMMIT&o=MESSAGES&n=100&S='+str(self.offset))
                     no_commits = False
                     if not commit_details:
                         no_commits = True
@@ -410,9 +412,23 @@ class BranchComparison:
                         self.commit['urlencoded_project'] = commit_details[i]['project'].replace('/','%2f')
                         self.commit['current_revision'] = commit_details[i]['current_revision']
                         self.commit['commit_msg'] = commit_details[i]['revisions'][self.commit['current_revision']]['commit']['message']
-                        print(self.commit['commit_msg'])
-                        self.commit['issues'] = re.findall(r'\w+-\d+', self.commit['commit_msg'])
-                        print(self.commit['issues'])
+                        #print(self.commit['commit_msg'])
+                        issue=re.findall(r'\w+-\d+', self.commit['commit_msg'])
+                        
+                        for each in issue:
+                            try:
+                                result=self.jira.issue(each)
+                                try:
+                                    parent=result.fields.parent.key
+                                    index=issue.index(each)
+                                    issue[index]=parent
+                                except :
+                                    pass
+                            except:
+                                pass
+
+                        
+                        self.commit['issues']=list(set(issue))
                         self.commit['merge_time'] = datetime.strptime(commit_details[i]['submitted'].split('.')[0], '%Y-%m-%d %H:%M:%S')
                         if self.branch2:
                             self.commit['branch'] = branch2
@@ -427,7 +443,7 @@ class BranchComparison:
                     print('Reached End Of Branch')
                     break
                 else:
-                    self.offset += 1000
+                    self.offset += 100
             if self.is_morty:
                 if branch2:
                     branch_str = '%s_morty'%(branch2)
@@ -447,7 +463,7 @@ class BranchComparison:
                     except requests.exceptions.SSLError as e:
                         mcommit_details = []
                         print('------------SSL Error------------------------------')
-                        print(e)
+                        # print(e)
                         mno_commits = True
                         break
                     for i in range(len(mcommit_details)):
@@ -463,7 +479,19 @@ class BranchComparison:
                             self.commit['commit_msg'] = \
                             mcommit_details[i]['revisions'][self.commit['current_revision']]['commit']['message']
                             # print(self.commit['commit_msg'])
-                            self.commit['issues'] = re.findall(r'\w+-\d+', self.commit['commit_msg'])
+                            issue=re.findall(r'\w+-\d+', self.commit['commit_msg'])
+                            for each in issue:
+                                try:
+                                    result=self.jira.issue(each)
+                                    try:
+                                        parent=result.fields.parent.key
+                                        index=issue.index(each)
+                                        issue[index]=parent
+                                    except :
+                                        pass
+                                except:
+                                    pass
+                            self.commit['issues']=list(set(issue))
                             # print(self.commit['issues'])
                             self.commit['merge_time'] = datetime.strptime(mcommit_details[i]['submitted'].split('.')[0],
                                                                           '%Y-%m-%d %H:%M:%S')
@@ -517,8 +545,19 @@ class BranchComparison:
                             self.commit['commit_msg'] = \
                             dcommit_details[i]['revisions'][self.commit['current_revision']]['commit']['message']
                             # print(self.commit['commit_msg'])
-                            self.commit['issues'] = re.findall(r'\w+-\d+', self.commit['commit_msg'])
-                            # print(self.commit['issues'])
+                            
+                            for each in issue:
+                                try:
+                                    result=self.jira.issue(each)
+                                    try:
+                                        parent=result.fields.parent.key
+                                        index=issue.index(each)
+                                        issue[index]=parent
+                                    except :
+                                        pass
+                                except:
+                                    pass
+                            self.commit['issues']=list(set(issue))
                             self.commit['merge_time'] = datetime.strptime(dcommit_details[i]['submitted'].split('.')[0],
                                                                           '%Y-%m-%d %H:%M:%S')
                             self.commit['branch'] = branch_str
@@ -561,7 +600,7 @@ class BranchComparison:
             style = 'normal'
         # sheet.write(row, 0, change['merge_time'], styles[style]['style_bg'])
         sheet.write(row, 0, str(
-            datetime.strptime(change['merge_time'], '%Y-%m-%d %H:%M:%S') + timedelta(hours=5, minutes=30)),
+            datetime.strptime(change['merge_time'], '%Y-%m-%d %H:%M:%S')+ timedelta(hours=5, minutes=30)),
                     styles[style]['style_bg'])
         sheet.write(row, 1, xlwt.Formula(
             'HYPERLINK("{}","{}")'.format(self.gerrit_urls[gerrit] + '/#/q/' + change['change_id'],
