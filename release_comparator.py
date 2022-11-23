@@ -1,5 +1,6 @@
-
+from http.client import responses
 import re, sys, requests, json
+from typing import Optional
 from urllib3.exceptions import HTTPError as BaseHTTPError
 from rmGerritUtils import *
 from datetime import datetime,timedelta
@@ -11,9 +12,11 @@ import multiprocessing
 from functools import reduce
 from progress_bar import *
 import time
+import requests
+from rmjirautilites import *
 
 from distutils.version import LooseVersion
-
+from jira.resilientsession import PrepareRequestForRetry, ResilientSession
 
 
 class ReleaseComparison:
@@ -84,13 +87,12 @@ class ReleaseComparison:
         self.manifest_input = manifest_file
         self.diff_report = diff_report
 
-        print(source_release_no, target_release_no, source_release_tag,
-               target_release_tag, self.model_full_name, self.model_name)
+        # print(source_release_no, target_release_no, source_release_tag,
+        #       target_release_tag, self.model_full_name, self.model_name)
 
         self.source_commit_list = {}
         self.target_commit_list = {}
         self.log_error_repos = []
-        self.tag_error_repos = []
         self.source_change_id=[]
         self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -132,7 +134,7 @@ class ReleaseComparison:
 
     def get_source_commit_id(self, project):
         stag_api = '/projects/%s/tags?m=%s' % (project, self.source_release_tag)
-        stags = self.gerrit.get(stag_api.replace("/","",1))
+        stags = self.gerrit.get(stag_api)
         stag_versions = [tag['ref'].replace('refs/tags/', '') for tag in stags]
         # print(stag_versions, self.source_release_no)
         return stags[stag_versions.index(self.source_release_tag)]['object']
@@ -172,7 +174,7 @@ class ReleaseComparison:
                     if 'gerrit.teamccp.com' in project_url:
                         project = '/'.join(project_url.split('gerrit.teamccp.com')[-1].split('@')[0].split('/')[1:])
                         if project not in self.repos_to_be_checked:
-                            self.repos_to_be_checked.append(project.replace("/","",1))
+                            self.repos_to_be_checked.append(project)
         except Exception as e:
             print(e)
             if str(e).find('401 Client Error')!=-1:
@@ -189,79 +191,52 @@ class ReleaseComparison:
         iteration_count = 0
         current_count = 0
         total_length = 100
-        log_api_template = '/plugins/gitiles/%s/+log/%s' % (project, tag_version)
-        
-        next = ''
-        cbreak = False
-        while True:
-            # printProgressBar(current_count, total_length, prefix='Checking commit id match', suffix='', decimals=1,
-            #                  length=100, fill='█')
-            iteration_count += 1
-            current_count += 1
-            log_api = log_api_template + next
-            print(log_api)
-            try:
-                logs = self.gerrit.get(log_api)
+        if "|" in project:
+            project_list=project.split("|")
+            project_name=project_list[0]
+            spec_file=project_list[1]
 
-            except requests.exceptions.HTTPError as e:
-                print('----unable to get logs----: %s' % e)
-                self.log_error_repos.append(project)
-                break
-            for log in logs['log']:
-                
-                start = log['message'].find('Change-Id: ')
-                end = log['message'].find('\n', start + 1)
-                
-                if log['message'].startswith('Revert'):
-                    if log['message'].find('Revert Revert') != -1:
-                        is_revert = False
-                    else:
-                        is_revert = True
-                else:
-                    is_revert = False
-
-                more_change_ids = log['message'].split('Change-Id')
-                
-
-                # if log['message'].count('Change-Id:') > 1:
-                #     print('****************Log message mutiple change ids********************')
-                #     print(log['message'])
-                #     #pass
-                issue_start = 0
-                while start != -1:
+                        log_api_template_spec_file = '/plugins/gitiles/%s/+log/%s/%s' % (project_name, tag_version,spec_file)
+            next = ''
+            cbreak = False
+            while True:
+                # printProgressBar(current_count, total_length, prefix='Checking commit id match', suffix='', decimals=1,
+                #                  length=100, fill='█')
+                iteration_count += 1
+                current_count += 1
+                log_api = log_api_template_spec_file + next
+                print(log_api)
+                try:
+                    logs_spec_file=self.gerrit.get(log_api_template_spec_file)
+                    #changes=self.gerrit.get(changes_template)
+                    
+                    
+                except requests.exceptions.HTTPError as e:
+                    print('----unable to get logs----: %s' % e)
+                    self.log_error_repos.append(project)
+                    break
+                for log in logs_spec_file['log']:
+                    start = log['message'].find('Change-Id: ')
                     end = log['message'].find('\n', start + 1)
-                    change_dict = {}
-                    if len(log['message'])<1100:
-                        change_dict['change_id'] = log['message'][start + 11: end]
-                        change_dict['merge_time'] = log['committer']['time']
-                        change_dict['is_revert'] = is_revert
-                        change_dict['project'] = project
-                        change_dict['author']=log['author']['name']
-                        change_dict['commit']=log['commit']
-                        issues = re.findall(r'\w+-\d+', log['message'])
-                        print("issues"+str(log['message'][start + 11: end]))
-                        print(issues)
-                        if len(more_change_ids) > 1:
-                            print("mords_change_id"+str(log['message'][start + 11: end]))
-                            str_q=re.findall(r'\w+-\d+', log['message'][issue_start:end])
-
-                            if str_q:
-                                print("uuuuuuuuu")
-                                change_dict['issues'] = re.findall(r'\w+-\d+', log['message'][issue_start:end])
-                            else:
-                                change_dict['issues']=issues
-                                print("issues_444")
-                                print(change_dict['issues'])
+                    if log['message'].startswith('Revert'):
+                        if log['message'].find('Revert Revert') != -1:
+                            is_revert = False
                         else:
-                            change_dict['issues'] = issues
+                            is_revert = True
                     else:
-                        if start<(len(log['message'])//2):
-                            pass
-                        elif start<((len(log['message'])//2)+(len(log['message'])//3)):
-                            pass
-                        elif start<((len(log['message'])//2)+(len(log['message'])//3)+50):
-                            pass
-                        else:
+                        is_revert = False
+
+                    more_change_ids = log['message'].split('Change-Id')
+
+                    # if log['message'].count('Change-Id:') > 1:
+                    #     print('****************Log message mutiple change ids********************')
+                    #     print(log['message'])
+                    #     #pass
+                    issue_start = 0
+                    while start != -1:
+                        end = log['message'].find('\n', start + 1)
+                        change_dict = {}
+                        if len(log['message'])<1100:
                             change_dict['change_id'] = log['message'][start + 11: end]
                             change_dict['merge_time'] = log['committer']['time']
                             change_dict['is_revert'] = is_revert
@@ -269,65 +244,182 @@ class ReleaseComparison:
                             change_dict['author']=log['author']['name']
                             change_dict['commit']=log['commit']
                             issues = re.findall(r'\w+-\d+', log['message'])
-                            print("isues")
-                            print(issues)
                             if len(more_change_ids) > 1:
-                                print("mords_change_id"+str(log['message'][start + 11: end]))
-                                str_q=re.findall(r'\w+-\d+', log['message'][issue_start:end])
-
-                                if str_q:
-                                    print("uuuuuuuuu")
-                                    change_dict['issues'] = re.findall(r'\w+-\d+', log['message'][issue_start:end])
-                                else:
-                                    change_dict['issues']=issues
-                                    print("issues_444")
-                                    print(change_dict['issues'])
+                                change_dict['issues'] = re.findall(r'\w+-\d+', log['message'][issue_start:end])
                             else:
                                 change_dict['issues'] = issues
-                            
+                        else:
+                            if start<(len(log['message'])//2):
+                                pass
+                            elif start<((len(log['message'])//2)+(len(log['message'])//3)):
+                                pass
+                            elif start<((len(log['message'])//2)+(len(log['message'])//3)+50):
+                                pass
+                            else:
+                                change_dict['change_id'] = log['message'][start + 11: end]
+                                change_dict['merge_time'] = log['committer']['time']
+                                change_dict['is_revert'] = is_revert
+                                change_dict['project'] = project
+                                change_dict['author']=log['author']['name']
+                                change_dict['commit']=log['commit']
+                                issues = re.findall(r'\w+-\d+', log['message'])
+                                if len(more_change_ids) > 1:
+                                    change_dict['issues'] = re.findall(r'\w+-\d+', log['message'][issue_start:end])
+                                else:
+                                    change_dict['issues'] = issues
+                                
 
-                    if project == self.manifest_project:
-                        non_stpt_issues = [issue for issue in issues if not issue.startswith('STBT-')]
-                        if len(non_stpt_issues) == 0:
-                            print('Ignoring manifest project only STBT tickets')
-                            break
-                    if to_append == 'source':
-                        if change_dict:
-                            self.source_commit_list[project].append(change_dict)
+                        if project == self.manifest_project:
+                            non_stpt_issues = [issue for issue in issues if not issue.startswith('STBT-')]
+                            if len(non_stpt_issues) == 0:
+                                print('Ignoring manifest project only STBT tickets')
+                                break
+                        if to_append == 'source':
+                            if change_dict:
+                                self.source_commit_list[project].append(change_dict)
+                        
+                        start = log['message'].find('Change-Id: ', start + 1)
+                        issue_start = end + 1
+
+                    if first_iter is True:
+                        if log['commit'] == cpoint_commit_id_1 or log['commit'] == cpoint_commit_id_2:
+                            cbreak = True
                     else:
-                        self.target_commit_list[project].append(change_dict)
+                        if log['commit'] == cpoint_commit_id_1:
+                            cbreak = True
+                    if cbreak is True:
+                        # print(
+                        #     '           *********************Check Point Commit id match found "%s"*********************'
+                        #     '**************'%log['commit'])
+                        # print('           Iteration count "%s"' %iteration_count)
+                        check_point = log['commit']
+                        return check_point
 
-                    start = log['message'].find('Change-Id: ', start + 1)
-                    issue_start = end + 1
+                # if cbreak is True:
+                #     break
+                # print('**************************************************************')
+                if 'next' not in  logs_spec_file.keys():
+                    break
+                next = '/?s=' +  logs_spec_file['next']
+        else:
+            log_api_template = '/plugins/gitiles/%s/+log/%s' % (project, tag_version)
+            next = ''
+            cbreak = False
+            while True:
+                # printProgressBar(current_count, total_length, prefix='Checking commit id match', suffix='', decimals=1,
+                #                  length=100, fill='█')
+                iteration_count += 1
+                current_count += 1
+                log_api = log_api_template+ next
+                print(log_api)
+                try:
+                    logs = self.gerrit.get(log_api)
+                    #changes=self.gerrit.get(changes_template)
+                    
+                    
+                    #print("logs_info"+str(logs))
+                except requests.exceptions.HTTPError as e:
+                    print('----unable to get logs----: %s' % e)
+                    self.log_error_repos.append(project)
+                    break
+                # log_no = 0
+                #print("Log_of_logs")
+                #print(logs['log'])
+                #print("end")
+                for log in logs['log']:
+                    start = log['message'].find('Change-Id: ')
+                    end = log['message'].find('\n', start + 1)
+                                    
+                    if log['message'].startswith('Revert'):
+                        if log['message'].find('Revert Revert') != -1:
+                            is_revert = False
+                        else:
+                            is_revert = True
+                    else:
+                        is_revert = False
 
-                if first_iter is True:
-                    if log['commit'] == cpoint_commit_id_1 or log['commit'] == cpoint_commit_id_2:
-                        cbreak = True
-                else:
-                    if log['commit'] == cpoint_commit_id_1:
-                        cbreak = True
-                if cbreak is True:
-                    # print(
-                    #     '           *********************Check Point Commit id match found "%s"*********************'
-                    #     '**************'%log['commit'])
-                    # print('           Iteration count "%s"' %iteration_count)
-                    check_point = log['commit']
-                    return check_point
+                    more_change_ids = log['message'].split('Change-Id')
 
-            # if cbreak is True:
-            #     break
-            # print('**************************************************************')
-            if 'next' not in logs.keys():
-                break
-            next = '/?s=' + logs['next']
+                    # if log['message'].count('Change-Id:') > 1:
+                    #     print('****************Log message mutiple change ids********************')
+                    #     print(log['message'])
+                    #     #pass
+                    issue_start = 0
+                    while start != -1:
+                        end = log['message'].find('\n', start + 1)
+                        change_dict = {}
+                        if len(log['message'])<1100:
+                            change_dict['change_id'] = log['message'][start + 11: end]
+                            change_dict['merge_time'] = log['committer']['time']
+                            change_dict['is_revert'] = is_revert
+                            change_dict['project'] = project
+                            change_dict['author']=log['author']['name']
+                            change_dict['commit']=log['commit']
+                            issues = re.findall(r'\w+-\d+', log['message'])
+                            if len(more_change_ids) > 1:
+                                change_dict['issues'] = re.findall(r'\w+-\d+', log['message'][issue_start:end])
+                            else:
+                                change_dict['issues'] = issues
+                        else:
+                            if start<(len(log['message'])//2):
+                                pass
+                            elif start<((len(log['message'])//2)+(len(log['message'])//3)):
+                                pass
+                            elif start<((len(log['message'])//2)+(len(log['message'])//3)+50):
+                                pass
+                            else:
+                                change_dict['change_id'] = log['message'][start + 11: end]
+                                change_dict['merge_time'] = log['committer']['time']
+                                change_dict['is_revert'] = is_revert
+                                change_dict['project'] = project
+                                change_dict['author']=log['author']['name']
+                                change_dict['commit']=log['commit']
+                                issues = re.findall(r'\w+-\d+', log['message'])
+                                if len(more_change_ids) > 1:
+                                    change_dict['issues'] = re.findall(r'\w+-\d+', log['message'][issue_start:end])
+                                else:
+                                    change_dict['issues'] = issues
+                                
+
+                        if project == self.manifest_project:
+                            non_stpt_issues = [issue for issue in issues if not issue.startswith('STBT-')]
+                            if len(non_stpt_issues) == 0:
+                                print('Ignoring manifest project only STBT tickets')
+                                break
+                        if to_append == 'source':
+                            if change_dict:
+                                self.source_commit_list[project].append(change_dict)
+                        else:
+                            self.target_commit_list[project].append(change_dict)
+
+                        start = log['message'].find('Change-Id: ', start + 1)
+                        issue_start = end + 1
+
+                    if first_iter is True:
+                        if log['commit'] == cpoint_commit_id_1 or log['commit'] == cpoint_commit_id_2:
+                            cbreak = True
+                    else:
+                        if log['commit'] == cpoint_commit_id_1:
+                            cbreak = True
+                    if cbreak is True:
+                        # print(
+                        #     '           *********************Check Point Commit id match found "%s"*********************'
+                        #     '**************'%log['commit'])
+                        # print('           Iteration count "%s"' %iteration_count)
+                        check_point = log['commit']
+                        return check_point
+
+                # if cbreak is True:
+                #     break
+                # print('**************************************************************')
+                if 'next' not in  logs.keys():
+                    break
+                next = '/?s=' +  logs['next']
+
 
     def get_tags(self, tag_api):
         try:
-            if tag_api.startswith("a")or tag_api.startswith("/a"):
-                c=tag_api.lstrip("a")
-                tags = self.gerrit.get(c)
-            else:
-                tags = self.gerrit.get(tag_api)
+            tags = self.gerrit.get(tag_api)
         except requests.exceptions.HTTPError as e:
             # print('Skipping project *****')
             if str(e).find('401 Client Error')!=-1:
@@ -351,12 +443,14 @@ class ReleaseComparison:
         '''
 
         change_data = []
+        self.jira=jira_login()
         target_change_ids = [change['change_id'] for change in self.target_commit_list[project]if change]
-        #print( "target_change_ids"+str(target_change_ids))
+        print( "target_change_ids"+str(target_change_ids))
         source_change_ids = [change['change_id'] for change in self.source_commit_list[project]if change]
         source_commit_id=[change['commit']for change in self.source_commit_list[project]if change]
-        #print("source_change_ids"+str(source_change_ids))
+        print("source_change_ids"+str(source_change_ids))
         print("commit_id"+str(set(source_commit_id)))
+        
         change_data_1=[]
         for each in set(source_commit_id):
             changes_template='/changes/?q=%s+status:Merged'%(each)
@@ -378,7 +472,21 @@ class ReleaseComparison:
         # print('           Source change ids:%s'%source_change_ids)
         # print('           ***************************************************')
         for change_item in self.source_commit_list[project]:
-            if change_item['change_id'] not in target_change_ids:
+            if change_item['change_id']  not in target_change_ids:
+                issue=list(set(change_item['issues']))
+                for each in issue:
+                    try:
+                        result=self.jira.issue(each)
+                        try:
+                            parent=result.fields.parent.key
+                            index=issue.index(each)
+                            issue[index]=parent
+                        except :
+                            pass
+                    except:
+                        pass
+
+                change_item['issues']=list(set(issue))
                 for each in change_data_by_change_id:
                     if isinstance(each,list):
                         for i in each:
@@ -448,13 +556,6 @@ class ReleaseComparison:
                         for project_count, project in enumerate(self.repos_to_be_checked)]
 
             results = pool.starmap(self.get_changes_for_project, zip_list)
-            # except:
-            #     print("exception occured")
-            #     time.sleep(5)
-            #     self.tag_error_repos.append()
-            #print("results:"+ str(results))
-
-            #print(len(results))
 
             self.final_data[self.current_gerrit]['changes'] = [item for sublist in results for item in sublist]
             self.final_data[self.current_gerrit]['changes'] = sorted(
@@ -473,11 +574,7 @@ class ReleaseComparison:
             # Getting the tag list for min version(stable release) ex:4.2.0.0
             tag_api = '/projects/%s/tags?m=%s_%s' % (project.replace('/', '%2F'),
                                                      self.model_full_name, min_version_no)
-            try:                                         
-                tags = self.get_tags(tag_api.replace("/","",1))
-            except:
-                self.tag_error_repos.append(tag_api)
-                break
+            tags = self.get_tags(tag_api)
           
 
             tag_versions = [tag['ref'].split('_')[-1] for tag in tags]
@@ -502,7 +599,7 @@ class ReleaseComparison:
                 else:
                     stag_api = '/projects/%s/tags?m=%s_%s' % (project.replace('/', '%2F')
                                                               , self.model_full_name, smallest_version)
-                    stags = self.get_tags(stag_api.replace("/","",1))
+                    stags = self.get_tags(stag_api)
                     stag_versions = [tag['ref'].split('_')[-1] for tag in stags]
                     if stag_versions and smallest_version in stag_versions:
                         cpoint_commit_id_2 = stags[stag_versions.index(smallest_version)]['object']
@@ -513,7 +610,7 @@ class ReleaseComparison:
                     else:
                         target_tag_api = '/projects/%s/tags?m=%s' % (
                         project.replace('/', '%2F'), self.target_release_tag)
-                        target_tags = self.get_tags(target_tag_api.replace("/","",1))
+                        target_tags = self.get_tags(target_tag_api)
                         target_tag_versions = [tag['ref'].split('_')[-1] for tag in target_tags]
                         cpoint_commit_id_1 = None
                         if target_tag_versions and smallest_version in target_tag_versions:
@@ -525,7 +622,7 @@ class ReleaseComparison:
                 # print("Getting change ids with out check point")
                 # print('checking target tag available "%s"' %self.target_release_tag)
                 target_tag_api = '/project"s/%s/tags?m=%s' % (project.replace('/', '%2F'), self.target_release_tag)
-                tags = self.get_tags(target_tag_api.replace("/","",1))
+                tags = self.get_tags(target_tag_api)
                 tag_versions = [tag['ref'].split('_')[-1] for tag in tags]
                 cpoint_commit_id_1 = None
                 if tag_versions and smallest_version in tag_versions:
